@@ -218,7 +218,8 @@ end
 --------------------------
 --- Gets the full filepath given the position of an element in the file
 ---@param opts table
-function M.get_file_from_position(opts)
+---@param callback fun(err: string|nil, result: any)
+function M.get_file_from_position(opts, callback)
 	opts = opts or {}
 	opts.bufnr = opts.bufnr or 0
 
@@ -231,49 +232,57 @@ function M.get_file_from_position(opts)
 	end
 
 	-- TODO: use callback instead of sync function
-	local results = vim.lsp.buf_request_sync(opts.bufnr, "textDocument/definition", {
+	local params = {
 		position = opts.position,
 		textDocument = {
 			uri = string.format("file://%s", vim.api.nvim_buf_get_name(opts.bufnr)),
 		},
-	}, 1000)
+	}
+	vim.lsp.buf_request(opts.bufnr, "textDocument/definition", params, function(err, results)
+		if err then
+			callback(err.message, nil)
+			return
+		end
 
-	if not results then
-		utils.notify("get_parent_file", {
-			msg = "Couldn't get the file for the parent class",
-			level = "ERROR",
-		})
-		return
-	end
+		if not results then
+			utils.notify("get_parent_file", {
+				msg = "Couldn't get the file for the parent class",
+				level = "ERROR",
+			})
+			return
+		end
 
-	for _, x in pairs(results) do
-		-- Handle different LSP response formats
-		local uri
-		local result = x.result
+		for _, result in pairs(results) do
+			-- Handle different LSP response formats
+			local uri
 
-		-- Handle array of results (typical for "textDocument/definition")
-		if type(result) == "table" and result[1] ~= nil then
-			if result[1].uri then
-				uri = result[1].uri
-			elseif result[1].targetUri then
-				uri = result[1].targetUri
+			-- Handle array of results (typical for "textDocument/definition")
+			if type(result) == "table" then
+				if result.uri then
+					uri = result.uri
+				elseif result.targetUri then
+					uri = result.targetUri
+				end
+			-- Handle single result
+			elseif type(result) == "table" and result.uri then
+				uri = result.uri
+			-- Handle phpactor-style nested result
+			elseif type(result) == "table" and result.result and result.result.uri then
+				uri = result.result.uri
 			end
-		-- Handle single result
-		elseif type(result) == "table" and result.uri then
-			uri = result.uri
-		-- Handle phpactor-style nested result
-		elseif type(result) == "table" and result.result and result.result.uri then
-			uri = result.result.uri
-		end
 
-		if uri then
-			return uri:gsub("file://", "")
+			if uri then
+				local path = uri:gsub("file://", "")
+				callback(nil, path)
+				return
+			end
 		end
-	end
+	end)
 end
 
 ---@param opts table
-function M.get_parent_file(opts)
+---@param callback fun(err: string|nil, result: any)
+function M.get_parent_file(opts, callback)
 	opts = opts or {}
 	opts.bufnr = opts.bufnr or 0
 
@@ -330,17 +339,21 @@ function M.get_parent_file(opts)
 		if capture_name == "parent" then
 			local line, char = node:start()
 
-			local p = M.get_file_from_position({ bufnr = opts.bufnr, position = { character = char, line = line } })
-			if not p or p == "" then
-				-- error already printed in get_file_from_position
-				return
-			end
-			local defs = M.parse_file({ filename = p })
-			for _, value in pairs(defs) do
-				if value["visibility"] ~= "private" then
-					table.insert(result, value)
+			M.get_file_from_position(
+				{ bufnr = opts.bufnr, position = { character = char, line = line } },
+				function(err, filepath)
+					if not filepath or filepath == "" then
+						-- error already printed in get_file_from_position
+						return
+					end
+					local defs = M.parse_file({ filename = filepath })
+					for _, value in pairs(defs) do
+						if value["visibility"] ~= "private" then
+							table.insert(result, value)
+						end
+					end
 				end
-			end
+			)
 		end
 	end
 	return result
